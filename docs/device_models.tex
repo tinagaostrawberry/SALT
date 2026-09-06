@@ -1,0 +1,756 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm,mathtools}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+% Headings are set on their own line; body text always starts a new line.
+\titleformat{\paragraph}[display]{\normalfont\bfseries}{}{0pt}{}
+\titlespacing*{\paragraph}{0pt}{\parskip}{0pt}
+
+\newcommand{\wnom}{\omega_0}
+\newcommand{\wsys}{\omega_s}
+\newcommand{\wrot}{\omega_r}
+\newcommand{\Jmat}{\bm{J}}
+
+\title{SALT Device Models}
+\author{}
+\date{}
+
+\sloppy
+\begin{document}
+\maketitle
+
+\section{Scope and conventions}
+
+SALT solves the periodic steady state of a balanced, single-harmonic
+transmission network using EMT device models, with the system frequency
+$\wsys$ as an unknown. EMT integrates the same device models in the time
+domain with the trapezoidal rule.
+
+Every device contributes a residual $F(x)=0$. Newton's method is written in
+the stamped form
+\begin{equation}
+  J(x^{[k]})\,x^{[k+1]} \;=\; J(x^{[k]})\,x^{[k]} \;-\; F(x^{[k]}),
+  \label{eq:newton}
+\end{equation}
+where $x^{[k]}$ is the vector of unknowns at iteration $k$, $F$ is the
+stacked vector of device residuals and $J=\partial F/\partial x$ is the
+system Jacobian. Written this way, a linear equation contributes its
+coefficients to $J$ and its constant to the right-hand side directly.
+
+In the steady-state formulation the network variables are phasors carried
+as real and imaginary components $[X_{re},X_{im}]$ at the fundamental, and
+machine states in their own rotating frame are DC. Consequently every
+$d/dt$ acting on a rotating frame state vanishes, which is noted equation
+by equation below.
+
+\subsection{Per-unit bases}
+\label{sec:bases}
+
+\begin{tabular}{@{}lll@{}}
+\toprule
+Quantity & Base & Convention \\
+\midrule
+Bus voltage        & $V_{\text{base}}^{\text{bus}}$ & line-to-line, RMS, kV \\
+Bus current        & $S_{\text{base}}/(V_{\text{base}}^{\text{bus}}\sqrt{3})$ & kA \\
+Machine voltage    & $V_{\text{base}}^{\text{gen}}=V_{\text{base}}^{\text{bus}}\!\cdot\!10^3\sqrt{2/3}$ & line-to-neutral, peak, V \\
+Machine current    & $I_{\text{base}}^{\text{gen}}=S_{\text{base}}^{\text{gen}}10^6/(V_{\text{base}}^{\text{gen}}\cdot 3/2)$ & peak, A \\
+Inverter           & $V_{\text{base}}^{\text{ibr}}$, $I_{\text{base}}^{\text{ibr}}=S^{\text{ibr}}/(V^{\text{ibr}}\sqrt{3})$ & line-to-line, RMS \\
+Induction motor    & as machine & line-to-neutral, peak \\
+\bottomrule
+\end{tabular}
+
+\medskip
+Because $V_{\text{base}}^{\text{gen}} = V_{\text{base}}^{\text{bus}}\sqrt{2/3}$
+and the conversion from line-to-neutral peak to line-to-line RMS carries
+$\sqrt{3/2}$, the machine-to-bus \emph{voltage} scale factor is exactly $1$.
+The remaining scale factors
+$c_I^{\,\text{gen}\to\text{bus}}$ and $c_V^{\,\text{ibr}\to\text{bus}}$ are:
+\begin{equation}
+  c_I^{\,\text{gen}\to\text{bus}} = \frac{I_{\text{base}}^{\text{gen}}/\sqrt{2}}{10^3\,I_{\text{base}}^{\text{bus}}},
+  \qquad
+  c_V^{\,\text{ibr}\to\text{bus}} = \frac{V_{\text{base}}^{\text{ibr}}}{V_{\text{base}}^{\text{bus}}},
+\end{equation}
+where $c_I^{\,\text{gen}\to\text{bus}}$ converts machine-base current to
+bus-base current, $c_V^{\,\text{ibr}\to\text{bus}}$ converts inverter-base
+voltage to bus-base voltage, $I_{\text{base}}^{\text{gen}}$ and
+$I_{\text{base}}^{\text{bus}}$ are the machine and bus current bases, and
+$V_{\text{base}}^{\text{ibr}}$ and $V_{\text{base}}^{\text{bus}}$ are the
+inverter and bus voltage bases. Controller parameters (exciter, governor)
+are per unit on the machine base and are used without conversion.
+
+\subsection{Sign convention}
+
+Machines and inverters produce power, so their terminal current leaves the
+device and enters the network; it is stamped negative into the bus equation.
+Loads consume power and are stamped positive.
+
+\subsection{\texorpdfstring{$dq$}{dq}-Transform}
+
+In SALT, the three-phase frequency-domain grid quantities interface with
+the $dq$-quantities through a phase shift,\footnote{Because SALT writes
+complex quantities as real and imaginary components, the phase shift
+$Y = e^{j\theta}X$ is computed as
+$\begin{bsmallmatrix}Y_{re}\\ Y_{im}\end{bsmallmatrix}
+ = \begin{bsmallmatrix}\cos\theta & -\sin\theta\\
+                       \sin\theta & \phantom{-}\cos\theta\end{bsmallmatrix}
+   \begin{bsmallmatrix}X_{re}\\ X_{im}\end{bsmallmatrix}$.}
+circumventing explicit computation of the $dq$-transform. Different device
+models use different conventions of the $dq$-transform, which are
+accommodated via linear transformations. The equations for each device are
+as follows. Throughout, $\theta$ is the angle of the device's own rotating
+frame, $\theta_{a}=\theta$, $\theta_{b}=\theta-\tfrac{2\pi}{3}$ and
+$\theta_{c}=\theta+\tfrac{2\pi}{3}$ are the three phase angles, and
+$c_V$, $c_I$ are the voltage and current base-conversion factors of
+\S\ref{sec:bases}.
+
+\paragraph{Synchronous machine and induction motor.}
+The $dq$-transform and its inverse are
+\begin{equation}
+  \begin{bmatrix}i_d\\ i_q\\ i_0\end{bmatrix}
+  = \frac{2}{3}
+  \begin{bmatrix}
+    \cos\theta_a  & \cos\theta_b  & \cos\theta_c\\
+    -\sin\theta_a & -\sin\theta_b & -\sin\theta_c\\
+    \tfrac{1}{2}  & \tfrac{1}{2}  & \tfrac{1}{2}
+  \end{bmatrix}
+  \begin{bmatrix}i_a\\ i_b\\ i_c\end{bmatrix},
+  \qquad
+  \begin{bmatrix}i_a\\ i_b\\ i_c\end{bmatrix}
+  =
+  \begin{bmatrix}
+    \cos\theta_a & -\sin\theta_a & 1\\
+    \cos\theta_b & -\sin\theta_b & 1\\
+    \cos\theta_c & -\sin\theta_c & 1
+  \end{bmatrix}
+  \begin{bmatrix}i_d\\ i_q\\ i_0\end{bmatrix},
+\end{equation}
+where $i_{a,b,c}$ are the instantaneous phase currents, $i_d,i_q$ are their
+direct- and quadrature-axis components in the rotating frame, and $i_0$ is
+the zero-sequence component, which vanishes under the balanced assumption.
+The SALT equivalent operates on the phase-$a$ phasor:
+\begin{equation}
+  \begin{bmatrix}I_{\phi a,re}\\ I_{\phi a,im}\end{bmatrix}
+  = c_I\,T_{\text{gen}}^{-1}(\theta)\begin{bmatrix}i_d\\ i_q\end{bmatrix},
+  \qquad
+  T_{\text{gen}}^{-1}(\theta) =
+  \begin{bmatrix}\cos\theta & -\sin\theta\\ \sin\theta & \phantom{-}\cos\theta\end{bmatrix},
+  \label{eq:Tgen}
+\end{equation}
+where $I_{\phi a,re}$ and $I_{\phi a,im}$ are the real and imaginary
+components of the phase-$a$ current phasor.
+
+\paragraph{Grid-forming inverter.}
+The inverter convention negates the quadrature axis,
+\begin{equation}
+  \begin{bmatrix}i_d\\ i_q\end{bmatrix}
+  = \frac{2}{3}
+  \begin{bmatrix}
+    \cos\theta_a & \cos\theta_b & \cos\theta_c\\
+    \sin\theta_a & \sin\theta_b & \sin\theta_c
+  \end{bmatrix}
+  \begin{bmatrix}i_a\\ i_b\\ i_c\end{bmatrix},
+\end{equation}
+so the SALT equivalent is the machine phase shift composed with a sign flip
+on $q$:
+\begin{equation}
+  \begin{bmatrix}I_{\phi a,re}\\ I_{\phi a,im}\end{bmatrix}
+  = c_I\,T_{\text{ibr}}^{-1}(\theta)\begin{bmatrix}i_{o,d}\\ i_{o,q}\end{bmatrix},
+  \qquad
+  T_{\text{ibr}}^{-1}(\theta)
+  = T_{\text{gen}}^{-1}(\theta)\begin{bmatrix}1&0\\0&-1\end{bmatrix}
+  = \begin{bmatrix}\cos\theta & \sin\theta\\ \sin\theta & -\cos\theta\end{bmatrix},
+  \label{eq:Tibr}
+\end{equation}
+where $i_{o,d},i_{o,q}$ are the inverter output-current components.
+
+\paragraph{Composite load.}
+The load frame is the system reference, $\theta_{\text{sys}}=0$, so the
+phase shift is the identity and the transform disappears entirely:
+\begin{equation}
+  \begin{bmatrix}v_d^s\\ v_q^s\end{bmatrix}
+  = c_V \begin{bmatrix}V_{\phi a,re}\\ V_{\phi a,im}\end{bmatrix},
+\end{equation}
+where $v_d^s,v_q^s$ are the stator voltage components and
+$V_{\phi a,re},V_{\phi a,im}$ the real and imaginary components of the
+phase-$a$ bus voltage phasor.
+
+\paragraph{Balanced three-phase output.}
+The remaining two phases are enforced algebraically rather than solved: for
+a phase-$a$ phasor $I_a$,
+\begin{equation}
+  \begin{bmatrix}I_b\\ I_c\end{bmatrix}
+  = \begin{bmatrix}e^{-j2\pi/3}\\ e^{+j2\pi/3}\end{bmatrix} I_a ,
+  \label{eq:balanced}
+\end{equation}
+which in real and imaginary components reads
+\begin{equation}
+  \begin{aligned}
+    I_{b,re} &= -\tfrac{1}{2}I_{a,re} + \tfrac{\sqrt{3}}{2}I_{a,im}, &\qquad
+    I_{b,im} &= -\tfrac{\sqrt{3}}{2}I_{a,re} - \tfrac{1}{2}I_{a,im},\\
+    I_{c,re} &= -\tfrac{1}{2}I_{a,re} - \tfrac{\sqrt{3}}{2}I_{a,im}, &\qquad
+    I_{c,im} &= \phantom{-}\tfrac{\sqrt{3}}{2}I_{a,re} - \tfrac{1}{2}I_{a,im},
+  \end{aligned}
+\end{equation}
+where $I_{b}$ and $I_{c}$ are the phase-$b$ and phase-$c$ phasors and the
+subscripts $re$, $im$ denote their real and imaginary components.
+
+\subsection{Document convention}
+
+Each device model below is stated twice. The first form is the governing
+time-domain equation, written with its derivatives intact, as EMT
+integrates it. An arrow then points to the steady-state form that SALT
+stamps:
+\begin{equation*}
+  \text{time-domain equation}
+  \;\;\xrightarrow{\;\text{SS}\;}\;\;
+  \text{steady-state residual stamped by SALT}.
+\end{equation*}
+Reading left to right therefore shows exactly which terms survive the
+steady-state assumption and which vanish. Equations given in one form only
+are already identical in both solvers.
+
+\section[Synchronous machine: GENROU]{Synchronous machine:
+GENROU\protect\footnote{P.~Kundur, \emph{Power System Stability and
+Control}: stator equations $3.120$--$3.134$, electrical torque $3.174$,
+machine parameter derivation \S4.1, per-unit bases \S3.4.1 and \S3.4.9,
+Park transform $3.60$, initialisation \S3.6.2, current-direction
+conventions Fig.~3.9 (generator) and Figs.~7.6--7.7 (load).}}
+
+Round-rotor machine with one field winding ($fd$), one $d$-axis damper
+($1d$) and two $q$-axis dampers ($1q$, $2q$).
+
+\subsection{Circuit matrices from nameplate data}
+
+The winding inductances and rotor resistances of the equivalent circuit are
+not given directly; they are computed from the nameplate reactances and
+open-circuit time constants.
+\begin{align}
+  L_{ad} &= X_d - X_l, & L_{aq} &= X_q - X_l, & L_\ell &= X_l, & L_0 &= X_l,\\
+  L_{ffd} &= \frac{L_{ad}^2}{X_d - X_d'}, & L_{f1d} &= L_{ad}, &
+  L_{11d} &= \frac{L_{ad}^2}{X_d - X_d''}, \\
+  L_{11q} &= \frac{L_{aq}^2}{X_q - X_q'}, & L_{22q} &= \frac{L_{aq}^2}{X_q - X_d''}.
+\end{align}
+where $X_d,X_q$ are the synchronous reactances, $X_d',X_q'$ the transient
+reactances, $X_d''$ the subtransient reactance, $X_l$ the leakage
+reactance, $L_{ad},L_{aq}$ the $d$- and $q$-axis mutual inductances,
+$L_\ell$ the leakage inductance, $L_0$ the zero-sequence inductance,
+$L_{ffd}$ the field self-inductance, $L_{f1d}$ the field-to-damper mutual
+inductance, $L_{11d}$ the $d$-axis damper self-inductance, and
+$L_{11q},L_{22q}$ the $q$-axis damper self-inductances.
+
+Rotor resistances follow from the open-circuit time constants. With
+\begin{equation}
+  L_{fd} = \frac{(X_d'-X_l)L_{ad}}{L_{ad}-(X_d'-X_l)},\quad
+  z = X_d''-X_l,\quad
+  y = \frac{L_{ad}L_{fd}}{L_{ad}+L_{fd}},\quad
+  L_{1d} = \frac{yz}{y-z},
+\end{equation}
+\begin{equation}
+  R_{1d} = \frac{y+L_{1d}}{T_{d0}''},\qquad
+  R_{fd} = \frac{L_{ad}+L_{fd}}{T_{d0}'},
+\end{equation}
+and analogously on the $q$ axis with
+$L_{1q}=(X_q'-X_l)L_{aq}/(L_{aq}-(X_q'-X_l))$, $y=L_{aq}L_{1q}/(L_{aq}+L_{1q})$,
+$L_{2q}=yz/(y-z)$:
+\begin{equation}
+  R_{2q} = \frac{y+L_{2q}}{T_{q0}''},\qquad
+  R_{1q} = \frac{L_{aq}+L_{1q}}{T_{q0}'} .
+\end{equation}
+where $T_{d0}',T_{q0}'$ are the open-circuit transient time constants,
+$T_{d0}'',T_{q0}''$ the open-circuit subtransient time constants,
+$R_{fd}$ the field resistance, $R_{1d}$ the $d$-axis damper resistance,
+$R_{1q},R_{2q}$ the $q$-axis damper resistances, $L_{fd},L_{1d},L_{1q},L_{2q}$
+the corresponding winding leakage inductances, and $y,z$ intermediate
+quantities carrying no physical meaning on their own.
+
+The assembled matrices are
+\begin{equation}
+  \bm{R} =
+  \begin{bmatrix}
+    R_a & & & & & & \\
+     & R_a & & & & & \\
+     & & R_a & & & & \\
+     & & & -R_{fd} & & & \\
+     & & & & -R_{1d} & & \\
+     & & & & & -R_{1q} & \\
+     & & & & & & -R_{2q}
+  \end{bmatrix},
+\end{equation}
+where $R_a$ is the armature (stator) resistance, the rotor entries carrying
+a negative sign from the equivalent-circuit orientation, and
+\begin{equation}
+  \bm{L} =
+  \begin{bmatrix}
+    -(L_{ad}{+}L_\ell) & & & L_{ad} & L_{ad} & & \\
+     & -(L_{aq}{+}L_\ell) & & & & L_{aq} & L_{aq}\\
+     & & -L_0 & & & &\\
+    -L_{ad} & & & L_{ffd} & L_{f1d} & &\\
+    -L_{ad} & & & L_{f1d} & L_{11d} & &\\
+     & -L_{aq} & & & & L_{11q} & L_{aq}\\
+     & -L_{aq} & & & & L_{aq} & L_{22q}
+  \end{bmatrix}.
+\end{equation}
+$\bm{L}_{sp}$ holds the flux terms that multiply rotor speed: it is
+$\bm{L}$ with the $d$ and $q$ rows exchanged and signed,
+\begin{equation}
+  \bm{L}_{sp} =
+  \begin{bmatrix}
+     & (L_{aq}{+}L_\ell) & & & & -L_{aq} & -L_{aq}\\
+    -(L_{ad}{+}L_\ell) & & & L_{ad} & L_{ad} & & \\
+     & & & & & & \\
+     & & & & & & \\
+     & & & & & & \\
+     & & & & & & \\
+     & & & & & &
+  \end{bmatrix}.
+\end{equation}
+
+\subsection{Equations}
+
+Let $i=[i_d,i_q,i_{fd}]^\top$, $e=[e_d,e_q,e_{fd}]^\top$, and
+$\bm{R},\bm{L}_{sp}$ denote the $(d,q,fd)$ sub-blocks.
+
+\paragraph{Stator.}
+\begin{equation}
+  e = -\bm{R}\,i + \bm{L}\,\frac{di}{dt} + \bm{L}_{sp}\,i\,\frac{\wrot}{\wnom}
+  \;\;\xrightarrow{\;\text{SS}\;}\;\;
+  0 = -e + \Big(-\bm{R} + \bm{L}_{sp}\tfrac{\wrot}{\wnom}\Big) i .
+\end{equation}
+where $i_d,i_q$ are the stator currents in the rotor frame, $i_{fd}$ the
+field current, $e_d,e_q$ the corresponding stator voltages, $e_{fd}$ the
+field voltage, $\wrot$ the rotor electrical speed and $\wnom$ the nominal
+speed.
+
+\paragraph{$dq$-transform, voltage.}
+\begin{equation}
+  0 = -v_{\phi a} + T_{\text{gen}}^{-1}(\theta)\,c_V\, e_{dq}.
+\end{equation}
+where $v_{\phi a}$ is the phase-$a$ terminal voltage phasor and
+$T_{\text{gen}}^{-1}(\theta)$ is the phase shift of
+Equation~\eqref{eq:Tgen}.
+
+\paragraph{Field voltage.}
+Supplied by the exciter.
+
+\paragraph{Rotor speed.}
+\begin{equation}
+  \wrot = \wsys .
+\end{equation}
+where $\wsys$ is the system frequency. In steady state every machine turns
+at the system frequency, so the rotor speed is not an independent unknown.
+
+\paragraph{Swing.}
+Electrical torque is derived from the speed terms of the stator equation,
+so when $\wrot\neq\wnom$ the mechanical torque is normalised:
+\begin{equation}
+  T_m\,\frac{\wrot}{\wnom} = e_d i_d + e_q i_q + R_a\big(i_d^2 + i_q^2\big).
+  \label{eq:swing}
+\end{equation}
+where $T_m$ is the mechanical torque supplied by the governor.
+
+In steady state the rotor acceleration is zero, so the swing equation
+$\tfrac{2H}{\wnom}\tfrac{d\wrot}{dt} = T_m - T_e$ collapses to
+$T_m = T_e$ and is replaced by the conservation of power expressed in
+Equation~\eqref{eq:swing}: the mechanical power entering the shaft,
+$T_m\wrot/\wnom$, equals the electrical power leaving the machine. The
+first two terms on the right-hand side are the electrical power delivered
+at the terminals, and the armature term $R_a(i_d^2+i_q^2)$ is the copper
+loss dissipated in transferring it.
+
+\paragraph{$dq$-transform, current.}
+\begin{equation}
+  0 = -I_{\phi a} + T_{\text{gen}}^{-1}(\theta)\,c_I\, i_{dq}.
+\end{equation}
+where $I_{\phi a}$ is the phase-$a$ terminal current phasor.
+
+\paragraph{Balanced output current.}
+Equation~\eqref{eq:balanced}.
+
+\paragraph{Mechanical torque.}
+Supplied by the governor.
+
+\section{Exciter: EXDC1}
+
+Five controller states $x_1\ldots x_5$ plus an algebraic terminal-voltage
+measurement $v_t$.
+
+\begin{align}
+  0 &= -K_e x_1 - T_e\,\dot{x}_1 + x_4
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= -K_e x_1 + x_4, \\
+  0 &= x_2 + T_r\,\dot{x}_2 - v_t
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= x_2 - v_t, \\
+  0 &= x_2 + T_c\dot{x}_2 + x_3 + T_b\dot{x}_3 + x_5 + T_c\dot{x}_5 - v_{\text{ref}}
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= x_2 + x_3 + x_5 - v_{\text{ref}}, \\
+  0 &= -K_a x_3 + x_4 + T_a\,\dot{x}_4
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= -K_a x_3 + x_4, \\
+  0 &= -K_{f1}\dot{x}_1 + x_5 + T_{f1}\,\dot{x}_5
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= x_5 .
+\end{align}
+where $x_1$ is the exciter output voltage, $x_2$ the measured terminal
+voltage, $x_3$ the lead--lag compensator output, $x_4$ the regulator
+output, $x_5$ the rate-feedback state, $v_{\text{ref}}$ the voltage
+setpoint, $K_e$ and $T_e$ the exciter gain and time constant, $T_r$ the
+measurement time constant, $T_b$ and $T_c$ the lead--lag time constants,
+$K_a$ and $T_a$ the regulator gain and time constant, and $K_{f1}$ and
+$T_{f1}$ the rate-feedback gain and time constant.
+
+Terminal voltage, in machine per unit:
+\begin{equation}
+  0 = -v_t + \sqrt{\tfrac{2}{3}}\,\Big(v_a^2+v_b^2+v_c^2\Big)^{1/2}.
+\end{equation}
+where $v_t$ is the terminal-voltage magnitude and $v_a,v_b,v_c$ are the
+instantaneous phase voltages.
+
+The exciter drives the machine field-voltage equation through
+\begin{equation}
+  0 = c_{\text{g}\to\text{e}}\,e_{fd} - x_1\frac{\wrot}{\wnom},
+  \qquad c_{\text{g}\to\text{e}} = \frac{L_{ad}}{R_{fd}} .
+\end{equation}
+where $c_{\text{g}\to\text{e}}$ converts the machine field voltage to the
+exciter per-unit base.
+
+\section[Governor: TGOV1D]{Governor:
+TGOV1D\protect\footnote{Governor per-unit conventions follow the IEEE PES
+report, \url{https://site.ieee.org/fw-pes/files/2013/01/PES_TR1.pdf}.}}
+
+Two states plus an algebraic mechanical power.
+
+\begin{align}
+  0 &= x_1 + T_3\dot{x}_1 - x_2 - T_2\dot{x}_2
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= x_1 - x_2, \\
+  0 &= p_{\text{ref}} - \Big(\tfrac{\wrot}{\wnom}-1\Big) - R x_2 - R T_1 \dot{x}_2
+     &&\xrightarrow{\;\text{SS}\;}& 0 &= p_{\text{ref}} - \Big(\tfrac{\wrot}{\wnom}-1\Big) - R x_2, \\
+  0 &= x_1 - \Big(\tfrac{\wrot}{\wnom}-1\Big) D_t - p_{\text{mech}} .
+\end{align}
+where $x_1$ is the turbine power state, $x_2$ the valve position,
+$p_{\text{ref}}$ the load reference setpoint, $p_{\text{mech}}$ the
+mechanical power delivered to the shaft, $R$ the droop, $T_1$ the governor
+time constant, $T_2$ and $T_3$ the turbine lead and lag time constants, and
+$D_t$ the turbine damping coefficient.
+
+Electrical and mechanical angles satisfy $\theta = (p/2)\theta_M$, hence
+$\wrot = (p/2)\omega_M$, where $p$ is the number of poles, $\theta_M$ the
+mechanical rotor angle and $\omega_M$ the mechanical speed. With $p=2$ this
+gives $\wrot=\omega_M$ and the mechanical torque coupling into the machine
+is
+\begin{equation}
+  0 = p_{\text{mech}} - \frac{\wrot}{\wnom}T_m .
+\end{equation}
+where $T_m$ is the mechanical torque appearing in the machine swing
+equation.
+
+\section[Grid-forming inverter]{Grid-forming
+inverter\protect\footnote{B.~Kenyon et al., ``Open-Source PSCAD
+Grid-Following and Grid-Forming Inverters and a Benchmark for Zero-Inertia
+Power System Simulations'' (NREL), which is also the source of the default
+parameter set; and ``An Accurate Small-Signal Model of Inverter-Dominated
+Islanded Microgrids using dq Reference Frame''.}}
+
+Droop-controlled inverter behind an LCL filter, with an inner current loop,
+an outer voltage loop and a virtual resistor. All $dq$ quantities are
+two-vectors; $\Jmat=\begin{bsmallmatrix}0&-1\\1&0\end{bsmallmatrix}$
+represents multiplication by $j$.
+
+\paragraph{Network interface.}
+\begin{equation}
+  0 = -I_{\phi a} + T_{\text{ibr}}^{-1}(\theta)\,c_I\, i_{o,dq},
+\end{equation}
+plus Equation~\eqref{eq:balanced}, and
+\begin{equation}
+  0 = -v_{\phi a} + T_{\text{ibr}}^{-1}(\theta)\,c_V\, v_{g,dq}.
+\end{equation}
+where $i_{o,dq}$ is the output current at the grid side of the filter,
+$v_{g,dq}$ the grid-side voltage, and $T_{\text{ibr}}^{-1}(\theta)$ the
+phase shift of Equation~\eqref{eq:Tibr}.
+
+\paragraph{Passive network.}
+\begin{align}
+  \dot{i}_o &= \tfrac{1}{L_c}\big(-r_c i_o + v_o - v_g\big) + j\omega i_o
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= \tfrac{1}{L_c}\big(-r_c i_o + v_o - v_g\big) + \tfrac{\wrot}{\wnom}\Jmat i_o, \\
+  \dot{v}_o &= \tfrac{1}{C_f}\big(i_f - i_o\big) + j\omega v_o
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= \tfrac{1}{C_f}\big(i_f - i_o\big) + \tfrac{\wrot}{\wnom}\Jmat v_o, \\
+  \dot{i}_f &= \tfrac{1}{L_f}\big(-r_f i_f + v_i - v_o\big) + j\omega i_f
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= \tfrac{1}{L_f}\big(-r_f i_f + v_i - v_o\big) + \tfrac{\wrot}{\wnom}\Jmat i_f .
+\end{align}
+where $L_c$ and $r_c$ are the grid-side inductance and resistance, $L_f$
+and $r_f$ the converter-side inductance and resistance, $C_f$ the filter
+capacitance, $i_f$ the converter-side current, $v_o$ the filter-capacitor
+voltage and $v_i$ the converter terminal voltage.
+
+\paragraph{Current controller.}
+\begin{align}
+  v_i &= k_{C,i}\,\gamma + k_{C,p}\,\dot{\gamma} - j\wrot L_f i_f + G_C v_o
+    &&\xrightarrow{\;\text{SS}\;}& v_i &= k_{C,i}\gamma - \tfrac{\wrot}{\wnom}L_f\Jmat i_f + G_C v_o,\\
+  \dot{\gamma} &= i_{f}^{\text{ref}} - i_f
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= i_{f}^{\text{ref}} - i_f .
+\end{align}
+where $\gamma$ is the current-loop integrator state, $i_f^{\text{ref}}$ the
+current reference from the voltage loop, $k_{C,p}$ and $k_{C,i}$ the
+proportional and integral gains, and $G_C$ the voltage feed-forward gain.
+
+\paragraph{Voltage controller.}
+\begin{align}
+  i_f^{\text{ref}} &= k_{V,i}\,x + k_{V,p}\,\dot{x} - j\wrot C_f v_o + G_V i_o
+    &&\xrightarrow{\;\text{SS}\;}& i_f^{\text{ref}} &= k_{V,i}x - \tfrac{\wrot}{\wnom}C_f\Jmat v_o + G_V i_o,\\
+  \dot{x} &= v_o^{\text{ref}} - v_o
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= v_o^{\text{ref}} - v_o .
+\end{align}
+where $x$ is the voltage-loop integrator state, $v_o^{\text{ref}}$ the
+capacitor-voltage reference, $k_{V,p}$ and $k_{V,i}$ the proportional and
+integral gains, and $G_V$ the current feed-forward gain.
+
+\paragraph{Droop.}
+With $M_p = \text{droop}_P\,\wnom$ and $M_q = \text{droop}_Q$,
+\begin{align}
+  \wrot &= \wnom + M_p\big(p_{\text{set}} - p_{\text{avg}}\big), \\
+  v_{o,q}^{\text{ref,droop}} &= v_{o,q}^{\text{set}} + M_q\big(q_{\text{set}} - q_{\text{avg}}\big), \\
+  \dot{p}_{\text{avg}} &= \omega_{\text{meas}}\big(p - p_{\text{avg}}\big),
+    & p &= v_{g,dq}^\top i_{o,dq}
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= p - p_{\text{avg}}, \\
+  \dot{q}_{\text{avg}} &= \omega_{\text{meas}}\big(q - q_{\text{avg}}\big),
+    & q &= v_{g,dq}^\top \Jmat\, i_{o,dq}
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= q - q_{\text{avg}}, \\
+  \dot{\theta} &= \wrot &&&&\xrightarrow{\;\text{SS}\;}& \wsys &= \wrot .
+\end{align}
+where $M_p$ and $M_q$ are the active- and reactive-power droop gains,
+$p_{\text{set}}$ and $q_{\text{set}}$ the power setpoints, $p$ and $q$ the
+instantaneous active and reactive power at the grid side,
+$p_{\text{avg}}$ and $q_{\text{avg}}$ their low-pass filtered values,
+$\omega_{\text{meas}}$ the measurement filter cutoff,
+$v_{o,q}^{\text{set}}$ the nominal quadrature voltage setpoint and
+$v_{o,q}^{\text{ref,droop}}$ the droop-adjusted reference.
+
+No factor of $3/2$ appears in $p$ and $q$. It would arise from the
+$dq$-transform for peak, line-to-neutral, non-per-unit quantities; with
+RMS, line-to-line, per-unit quantities it cancels.
+
+\paragraph{Virtual resistor.}
+With $\omega_{VR} = \omega_{VR}^{\text{rad}}/(2\pi)$,
+\begin{align}
+  \frac{d}{dt}V_o^{VR,\text{avg}} &= \omega_{VR}\big(R_v i_o - V_o^{VR,\text{avg}}\big)
+    &&\xrightarrow{\;\text{SS}\;}& 0 &= \omega_{VR}\big(R_v i_o - V_o^{VR,\text{avg}}\big), \\
+  V_o^{VR} &= V_o^{VR,\text{avg}} - R_v i_o, \\
+  v_o^{\text{ref}} &= \big[0,\;v_{o,q}^{\text{ref,droop}}\big]^\top + V_o^{VR}.
+\end{align}
+where $R_v$ is the virtual resistance, $\omega_{VR}$ the virtual-resistor
+filter cutoff, $V_o^{VR,\text{avg}}$ the filtered virtual-resistor voltage
+and $V_o^{VR}$ the voltage correction it applies to the reference.
+
+\section[Composite load: induction motor + ZIP]{Composite load: induction
+motor + ZIP\protect\footnote{EPRI, ``Technical Reference on the Composite
+Load Model'' (2020), shows that the motor's reactive power cannot be
+specified by a power factor and must come from the slip. As such,
+initialisation requires its internal Newton--Raphson solve. The default
+parameter set comes from the following. The $Z/I/P$ split and the motor
+share are from ``Implementation of the WECC Composite Load Model for
+Utilities using the Component-Based Modeling Approach'',
+\url{https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=7520081}.
+Reactive power is taken as pure impedance for industrial loads, following
+NERC, ``Reliability Guideline: Developing Load Model Composition Data''
+(March 2017),
+\url{https://www.nerc.com/globalassets/who-we-are/standing-committees/rstc/lmwg/reliability_guideline_-_load_model_composition_-_2017-02-28.pdf}.
+The ZIP low-pass filter time constant is the Simscape default,
+\url{https://www.mathworks.com/help/sps/ref/constantpowerloadthreephase.html}.
+Motor parameters are Kundur's small industrial motor, \S7.4.3.c; the motor
+transform is Kundur $7.23$--$7.27$ and the slip/efficiency relation \S7.7.2.
+Supporting literature for the simplified IM${+}$ZIP composition comes from
+``Development of Composite Load Models of Power Systems using On-line
+Measurement Data'' (2006), ``Standard Load Models for Power Flow and
+Dynamic Performance Simulation'' (1995), and ``Load Modeling --- A
+Review'' (2018).}}
+
+One induction motor in parallel with one static ZIP load at each load bus.
+The motor share of the bus MW is \texttt{powerPercent}.
+
+\subsection{Induction motor}
+
+Let $i_{sr} = [i_{d}^{s}, i_{q}^{s}, i_{d}^{r}, i_{q}^{r}]^\top$ and
+$v_{sr} = [v_d^s, v_q^s, 0, 0]^\top$.
+
+\paragraph{Terminal interface.}
+\begin{equation}
+  0 = -v_{dq}^s + c_V\,v_{\phi a},\qquad
+  0 = -\big(i_{dq}^s + i_{dq}^{\text{ZIP}}\big) + c_I\,I_{\phi a},
+\end{equation}
+plus Equation~\eqref{eq:balanced}, where $v_{dq}^s$ and $i_{dq}^s$ are the
+motor stator voltage and current and $i_{dq}^{\text{ZIP}}$ is the current
+drawn by the static ZIP load sharing the bus.
+
+\paragraph{Slip and reference angle.}
+\begin{equation}
+  \omega_{\text{slip}} = \wsys - \wrot, \qquad \theta_{\text{sys}} = 0 .
+\end{equation}
+where $\omega_{\text{slip}}$ is the slip frequency, $\wrot$ the rotor
+speed and $\theta_{\text{sys}}$ the system reference angle, fixed at zero.
+
+\paragraph{Stator and rotor.}
+With
+\begin{equation}
+  \bm{R} = \operatorname{diag}(R_s,R_s,R_r,R_r),\qquad
+  \bm{L} = \begin{bmatrix} L_{ss}\bm{I}_2 & L_m\bm{I}_2 \\ L_m\bm{I}_2 & L_{rr}\bm{I}_2\end{bmatrix},
+\end{equation}
+\begin{equation}
+  \bm{\Omega} = \begin{bmatrix}
+    0 & -\wsys & 0 & 0\\ \wsys & 0 & 0 & 0\\
+    0 & 0 & 0 & -\omega_{\text{slip}}\\ 0 & 0 & \omega_{\text{slip}} & 0
+  \end{bmatrix},
+\end{equation}
+\begin{equation}
+  v_{sr} = \bm{R}\,i_{sr} + \frac{d}{dt}\frac{\bm{L}}{\wnom}i_{sr} + \frac{\bm{\Omega}}{\wnom}\bm{L}\,i_{sr}
+  \;\;\xrightarrow{\;\text{SS}\;}\;\;
+  0 = -v_{sr} + \bm{R}i_{sr} + \bm{\Omega}\,\frac{\bm{L}}{\wnom}i_{sr}.
+\end{equation}
+where $R_s$ and $R_r$ are the stator and rotor resistances, $L_{ss}$,
+$L_{rr}$ and $L_m$ the stator, rotor and magnetising inductances,
+$\bm{\Omega}$ the speed-coupling matrix and $i_{sr}$, $v_{sr}$ the stacked
+stator and rotor currents and voltages.
+
+The inductances follow from the nameplate reactances as
+$L_m = X_m$, $L_{ss} = X_s + X_m$, $L_{rr} = X_r + X_m$, where $X_m$ is the
+magnetising reactance and $X_s$, $X_r$ the stator and rotor leakage
+reactances; no division by $\omega$ is needed because the reactances are
+per unit at $\omega_{pu}=1$.
+
+\paragraph{Swing.}
+With
+$\bm{L}_{Te} = \bm{L}^\top\!\begin{bsmallmatrix}0&0\\0&0\\0&-1\\1&0\end{bsmallmatrix}\!\begin{bsmallmatrix}0&0&1&0\\0&0&0&1\end{bsmallmatrix}$,
+\begin{equation}
+  \frac{2H}{\wnom}\frac{d\wrot}{dt} = i_{sr}^\top \bm{L}_{Te}\, i_{sr} - T_0\Big(\frac{\wrot}{\wsys}\Big)^{m}
+  \;\;\xrightarrow{\;\text{SS}\;}\;\;
+  0 = i_{sr}^\top \bm{L}_{Te}\, i_{sr} - T_0\Big(\frac{\wrot}{\wsys}\Big)^{m}.
+\end{equation}
+where $H$ is the motor inertia constant, $\bm{L}_{Te}$ the matrix that
+extracts electrical torque from the currents, $T_0$ the load torque at
+synchronous speed and $m$ the torque--speed exponent of the mechanical
+load. As for the synchronous machine, the steady-state form states that the
+electrical torque produced balances the mechanical torque absorbed.
+
+\paragraph{Base.}
+The motor MVA base is its apparent power at full loading,
+\begin{equation}
+  S_{\text{base}}^{IM} = \frac{P_{\text{bus}}\cdot\text{powerPercent}}{\mathrm{PF}} ,
+\end{equation}
+where $P_{\text{bus}}$ is the total active power of the bus,
+\texttt{powerPercent} the motor's share of it and $\mathrm{PF}$ the assumed
+power factor. Voltage and current bases are derived exactly as for the
+synchronous machine. PF only sizes the base; the motor's reactive power is
+determined by the slip, not by PF.
+
+\subsection{ZIP}
+
+\begin{align}
+  \begin{bmatrix}P\\Q\end{bmatrix}
+    &= \begin{bmatrix}P_z\\Q_z\end{bmatrix}V_m^2
+     + \begin{bmatrix}P_i\\Q_i\end{bmatrix}V_m
+     + \begin{bmatrix}P_p\\Q_p\end{bmatrix}, \\
+  V_m &= \sqrt{(v_d^s)^2 + (v_q^s)^2}, \\
+  i_d^{\text{ZIP}} &= \frac{P v_d + Q v_q}{V_m^2}, \qquad
+  i_q^{\text{ZIP}} = \frac{P v_q - Q v_d}{V_m^2}.
+\end{align}
+where $P$ and $Q$ are the active and reactive power drawn by the static
+load, $V_m$ the terminal-voltage magnitude, $P_z,Q_z$ the
+constant-impedance shares, $P_i,Q_i$ the constant-current shares,
+$P_p,Q_p$ the constant-power shares and $i_d^{\text{ZIP}},i_q^{\text{ZIP}}$
+the resulting load currents.
+
+The $Z$, $I$, $P$ shares are normalised within the ZIP category, so they
+sum to one for $P$ and independently for $Q$.
+
+\section{Network elements}
+
+\subsection{Transmission line}
+
+Three-phase nominal-$\pi$ with no mutual coupling. From the case data,
+$L = X/\wnom$ and $C = B_{\text{chg}}/(2\wnom)$, where $X$ is the branch
+reactance and $B_{\text{chg}}$ the total line-charging susceptance.
+\begin{equation}
+  Y_{br} = \frac{1}{R + j\omega L},\qquad Y_{sh} = j\omega C,
+\end{equation}
+\begin{equation}
+  I_{\text{from}} = Y_{br}(V_f - V_t) + Y_{sh}V_f,\qquad
+  I_{\text{to}}   = -Y_{br}(V_f - V_t) + Y_{sh}V_t .
+\end{equation}
+where $Y_{br}$ is the series branch admittance, $Y_{sh}$ the shunt
+admittance at each end, $R$ the branch resistance, $V_f$ and $V_t$ the
+from- and to-bus voltage phasors, and $I_{\text{from}}$, $I_{\text{to}}$
+the currents injected at each end.
+
+Because $\omega$ is an unknown, each branch also contributes
+$\partial I/\partial\omega$ to the Jacobian column of the frequency
+variable:
+\begin{equation}
+  \frac{\partial I_{br}}{\partial \omega}
+  = -\left(\frac{jL}{|Z|^2} + \frac{2\omega L^2 (R - j\omega L)}{|Z|^4}\right)(V_f - V_t),
+  \qquad
+  \frac{\partial I_{sh}}{\partial \omega} = jC\,V .
+\end{equation}
+where $Z = R + j\omega L$ is the series branch impedance and $V$ is the
+terminal voltage at the end where the shunt is stamped.
+
+\subsection{Transformer}
+
+Series $R$--$L$ with $L = X/\wnom$. When $R\neq 0$ it is stamped as an
+admittance $Y=1/(R+j\omega L)$. When $R=0$ there is no admittance, so the
+branch current becomes an explicit unknown (modified nodal analysis) and
+the branch contributes
+\begin{equation}
+  0 = -(V_f - V_t) + j\omega L\, I, \qquad
+  \frac{\partial}{\partial\omega} = jL\,I .
+\end{equation}
+where $I$ is the branch current carried as an explicit unknown and $L$ the
+leakage inductance.
+
+\subsection{Constant-impedance load}
+
+Selected by the sign of the reactance:
+\begin{equation}
+  Y =
+  \begin{cases}
+    \dfrac{1}{R + j\omega L}, & X > 0 \quad (L = X/\wnom), \\[2ex]
+    \dfrac{1}{R} + j\omega C, & X < 0 \quad (C = \operatorname{Im}(1/Z)/\wnom), \\[2ex]
+    \dfrac{1}{R}, & X = 0 .
+  \end{cases}
+\end{equation}
+where $Y$ is the stamped shunt admittance, $R$ and $X$ the load resistance
+and reactance from the case data, $Z = R + jX$, and $L$, $C$ the equivalent
+inductance or capacitance the reactance corresponds to.
+
+\subsection{Slack-angle equation}
+
+The system frequency adds one unknown, so one equation is added: the slack
+bus angle is pinned by fixing the ratio of the imaginary to the real part
+of its phase-$a$ voltage, which is invariant to magnitude,
+\begin{equation}
+  0 = c\,V_{\text{re}}^{\text{slack}} - V_{\text{im}}^{\text{slack}},
+  \qquad c = \frac{\operatorname{Im}(V^{\text{slack}}_{\text{pf}})}{\operatorname{Re}(V^{\text{slack}}_{\text{pf}})}.
+  \label{eq:slackangle}
+\end{equation}
+where $V_{\text{re}}^{\text{slack}}$ and $V_{\text{im}}^{\text{slack}}$ are
+the real and imaginary components of the slack-bus phase-$a$ voltage,
+$V^{\text{slack}}_{\text{pf}}$ is the slack voltage from the power-flow
+solution and $c$ is the tangent of the angle it fixes.
+
+\section{System frequency}
+
+The system frequency in SALT is a variable that is used by device models and
+network branch elements, as previously described. It is not explicitly
+defined by its own equation, instead emerging naturally from power
+mismatches, and equation~(\ref{eq:slackangle}) keeps the system full-rank.
+However, during transient simulation, power mismatches are not resolved
+explicitly by frequency deviation due to the dynamic flow of power,
+requiring EMT to explicitly define the system frequency.
+
+EMT carries the system frequency as an MVA-weighted average of every
+rotating machine and inverter speed:
+\begin{equation}
+  f_{s0} = \frac{\sum_i S_{\text{base},i}\,f_i}{\sum_i S_{\text{base},i}} .
+\end{equation}
+where $f_{s0}$ is the reported system frequency, $S_{\text{base},i}$ the
+MVA base of device $i$ and $f_i$ its instantaneous electrical frequency.
+
+\end{document}
