@@ -239,9 +239,9 @@ plot list for a case in the case table in `run_SALT.m`.
 
 # Artificial intelligence (AI) disclaimer
 
-The use of AI (Anthropic, Opus 5. 2026, August 28 - September 1) was applied in
-helping with documentation generation, code beautification, and code
-conversion from MATLAB to Python.
+The use of AI (Anthropic, Opus 5. 2026, August 28 - September 7) was 
+applied in helping with documentation generation, code refactoring, and
+code beautification.
 
 # References
 [1] M. Xiong, B. Wang, D. Vaidhynathan, J. Maack, M. Reynolds, A. Hoke, 
