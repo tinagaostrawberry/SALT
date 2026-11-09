@@ -1,12 +1,20 @@
-%% Contingency analysis: SALT vs enhanced power flow vs power flow
+%% Contingency analysis: HB vs SALT vs enhanced power flow vs power flow
 %
 % Sweeps every single-generator outage on the 39-bus system with high
 % inverter penetration and counts the limit violations each model predicts.
-% Three models see the same contingency:
+% Four models see the same contingency:
 %
 %   SALT     the steady-state EMT solver in solver/SALT.m. Physics-based
 %            device models, and the system frequency is an unknown, so a
 %            power imbalance moves it off 60 Hz.
+%   HB       the harmonic-balance solver in solver/HB.m, run here at
+%            K_HB = 1 with no harmonic source. HB generalises every SALT
+%            device model by restoring each dropped derivative as (j*k*w0);
+%            every restored term carries a factor k, so with the devices at
+%            DC and the network at the fundamental it must reproduce SALT
+%            exactly. It is in this sweep as a CHECK, not as a fourth
+%            opinion - see the comparison below - and the loop asserts the
+%            two agree to round-off on every contingency.
 %   Enh-PF   PF (solver/PF.m) with the composite loads reduced to per-bus
 %            ZIP coefficients and every device given a frequency droop, so
 %            the power flow also solves for frequency. Those two data sets
@@ -17,6 +25,11 @@
 %
 % The point of the comparison is which contingencies each model flags:
 % bus-voltage limits, generator Q limits and branch ratings.
+%
+% HB's own exhaustive validation lives in validation/validateHbVsSalt (every
+% internal device state, not just the interface) and
+% validation/validateHb (against the legacy EmtHb, with harmonics on).
+% Those are developer tools and are not part of the shipped repo.
 
 clear; close all; clc
 root = addpathSALT;
@@ -35,10 +48,28 @@ loadScale = 1;
 
 %% Solver settings
 
-% Newton-Raphson, for SALT
+% Newton-Raphson, for SALT and HB
 totIters_NR  = 50;
 relErrTol_NR = 1e-4;
 absErrTol_NR = 1e-8;
+
+% Harmonics above DC carried by HB. ONE, and no harmonic source, because
+% that is the setting in which HB has to reproduce SALT: the devices then
+% sit entirely at DC and the network entirely at the fundamental, so every
+% restored (j*k*w0) derivative vanishes where it would otherwise act. Raise
+% it (and call hb.setHigherHarmonicsParams) to study harmonic content, but
+% then the equality assertions below no longer apply - the models are no
+% longer solving the same problem.
+K_HB = 1;
+
+% How far HB and SALT may differ. They solve the same equations at K_HB = 1,
+% so the only difference is the order the two sparse solves accumulate
+% round-off in; on this system that sits a few times 1e-12, and the Newton
+% tolerances above stop each solver a long way above it. 1e-6 therefore
+% catches any real modelling difference - a sign, a base change, a missing
+% term would all be orders of magnitude larger - without failing on the
+% two solvers' own stopping noise.
+TOL_HB_VS_SALT = 1e-6;
 
 % Absolute step clamp. Voltages are per unit and the frequency should not
 % move far, so no single Newton step should exceed 1.
@@ -87,6 +118,19 @@ bus_V_SALT_0  = bus_VreIm_SALT_0(1:2:(2*salt.numBus)) + ...
 bus_Vm_SALT_0 = abs(bus_V_SALT_0);
 bus_Va_SALT_0 = angle(bus_V_SALT_0);
 [I_gen_SALT_0,I_load_SALT_0,I_series_SALT_0] = calcSaltCurrents(salt);
+
+%% Base case: build and solve HB on the same data
+% HB.fromSalt copies SALT's already parsed parameters rather than re-reading
+% the workbook, so the two models cannot differ through their inputs or
+% through two separate power-flow solves - which is what lets the agreement
+% below be asserted as equality rather than closeness.
+hb = HB.fromSalt(salt,K_HB);
+scriptSimulate_HB
+hbVsSalt_0 = compareHbToSalt(hb,salt);
+fprintf('HB vs SALT, base case: worst relative difference %.3e\n', ...
+    hbVsSalt_0.worstRel);
+assert(hbVsSalt_0.worstRel < TOL_HB_VS_SALT, ...
+    'HB and SALT disagree on the base case (%s)',hbVsSalt_0.worstName)
 
 %% Enhanced power-flow settings, derived from the SALT model
 % Both conversions read the CONVERGED SALT object, so the enhanced power
@@ -175,22 +219,29 @@ brchRateMva = mpc_0.branch(:,[F_BUS T_BUS RATE_A]);
 brchRateMva(:,3) = brchRateMva(:,3)/mpc_0.baseMVA;
 
 %% Contingency sweep
-% One contingency per generating unit: trip it, re-solve all three models,
+% One contingency per generating unit: trip it, re-solve all four models,
 % and count the violations each one reports.
 
 numContingencies = size(mpc_0.gen,1);
 
 % Per-contingency record
 freq_SALT       = NaN(numContingencies,1);   % Hz
+freq_HB         = NaN(numContingencies,1);   % Hz
 freq_enhPF      = NaN(numContingencies,1);   % Hz
 outagedGenBus   = NaN(numContingencies,1);
 Vload_SALT_all  = [];  Vload_enhPF_all = [];
 Pgen_SALT_all   = [];  Pgen_enhPF_all  = [];
+% Worst HB-vs-SALT disagreement per contingency, and what it was on
+hbVsSalt_rel    = NaN(numContingencies,1);
+hbVsSalt_what   = strings(numContingencies,1);
 
 % Violation totals across the whole sweep
 numVlimViolat_SALT  = 0;  numVlimViolat_enhPF  = 0;  numVlimViolat_PF  = 0;
 numQlimViolat_SALT  = 0;  numQlimViolat_enhPF  = 0;  numQlimViolat_PF  = 0;
 numLineViolat_SALT  = 0;  numLineViolat_enhPF  = 0;  numLineViolat_PF  = 0;
+numVlimViolat_HB    = 0;
+numQlimViolat_HB    = 0;
+numLineViolat_HB    = 0;
 numNoConvergence_PF = 0;
 
 for idxOutage = 1:numContingencies
@@ -255,8 +306,41 @@ for idxOutage = 1:numContingencies
     freq_SALT(idxOutage)  = salt.x_v(salt.getRowIdx_w)/(2*pi);
     freq_enhPF(idxOutage) = w_enhPF/(2*pi);
 
+    % -------------------------- HB side ------------------------------
+    % Built from THIS contingency's SALT object, so the outage, the new
+    % slack bus and every device parameter come across with it and the two
+    % models are solving the same case by construction.
+    hb = HB.fromSalt(salt,K_HB);
+    scriptSimulate_HB
+
+    bus_VreIm_contingency_HB = ...
+        hb.x_v(hb.getRowIdxAbc_fromBusNums(hb.bus,1));
+    % Coefficient -> phasor: 2/N, the conjugate split and the unnormalized
+    % DFT convention (see CALCHBCURRENTS).
+    bus_V_contingency_HB = (2/hb.N)*( ...
+        bus_VreIm_contingency_HB(1:2:(2*hb.numBus)) + ...
+     1j*bus_VreIm_contingency_HB(1+(1:2:(2*hb.numBus))));
+    bus_Vm_contingency_HB = abs(bus_V_contingency_HB);
+    bus_Va_contingency_HB = angle(bus_V_contingency_HB);
+    [I_gen_contingency_HB,I_load_contingency_HB, ...
+        I_series_contingency_HB] = calcHbCurrents(hb);
+
+    freq_HB(idxOutage) = hb.x_v(hb.getRowIdx_w0)/(2*pi);
+
+    % HB must reproduce SALT at K_HB = 1, so this is an assertion, not a
+    % result. A failure here means a device model's restored derivative,
+    % base change or sign is wrong, and the violation counts below would be
+    % comparing two different systems.
+    cmpHb = compareHbToSalt(hb,salt);
+    hbVsSalt_rel(idxOutage)  = cmpHb.worstRel;
+    hbVsSalt_what(idxOutage) = string(cmpHb.worstName);
+    assert(cmpHb.worstRel < TOL_HB_VS_SALT, ...
+        ['HB and SALT disagree on the outage at bus %d: ' ...
+         'worst relative difference %.3e on %s'], ...
+        busNum_genLoss,cmpHb.worstRel,cmpHb.worstName)
+
     % ------------------------ Derived quantities ---------------------
-    % One call per model. The three models must agree on WHICH buses and
+    % One call per model. The models must agree on WHICH buses and
     % branches exist, or the comparison is not element for element.
     assert(isequal(I_gen_contingency_SALT(:,1),I_gen_contingency_enhPf(:,1)))
     assert(isequal(I_load_contingency_SALT(:,1),I_load_contingency_enhPf(:,1)))
@@ -298,6 +382,25 @@ for idxOutage = 1:numContingencies
     numVlimViolat_SALT = numVlimViolat_SALT + size(vlimViolat,1);
     numQlimViolat_SALT = numQlimViolat_SALT + size(qlimViolat,1);
     numLineViolat_SALT = numLineViolat_SALT + size(ratedLineViolat,1);
+
+    % HB, through the same checker on its own voltages and currents. The
+    % assertion above already says the two solutions agree, so these totals
+    % must come out identical to SALT's; counting them separately is what
+    % turns that from an assumption into a printed result, and it would
+    % catch a quantity that agrees numerically but is extracted at the
+    % wrong harmonic or the wrong scale.
+    assert(converge_HB)
+    [vlimViolat,~,~,~,qlimViolat,~,ratedLineViolat] = ...
+        checkContingencyViolations( ...
+        bus,bus_Vm_contingency_HB,bus_Va_contingency_HB, ...
+        I_gen_contingency_HB,I_load_contingency_HB, ...
+        I_series_contingency_HB, ...
+        genQmin_contingency,genQmax_contingency, ...
+        genPmin_contingency,genPmax_contingency,busVmin,busVmax, ...
+        brchRateMva_contingency);
+    numVlimViolat_HB = numVlimViolat_HB + size(vlimViolat,1);
+    numQlimViolat_HB = numQlimViolat_HB + size(qlimViolat,1);
+    numLineViolat_HB = numLineViolat_HB + size(ratedLineViolat,1);
 
     assert(enhPfResult.success)
     [vlimViolat,busV_enhPf,~,~,qlimViolat,busQ_enhPf, ...
@@ -344,20 +447,41 @@ fprintf('================================================================\n');
 fprintf(' Contingency analysis: %s\n',caseName);
 fprintf(' %d single-generator outages\n',numContingencies);
 fprintf('================================================================\n');
-fprintf(' %-24s %8s %8s %8s\n','violations (total)','SALT','Enh-PF','PF');
-fprintf(' %-24s %8d %8d %8d\n','bus voltage', ...
-    numVlimViolat_SALT,numVlimViolat_enhPF,numVlimViolat_PF);
-fprintf(' %-24s %8d %8d %8d\n','generator Q limit', ...
-    numQlimViolat_SALT,numQlimViolat_enhPF,numQlimViolat_PF);
-fprintf(' %-24s %8d %8d %8d\n','branch rating', ...
-    numLineViolat_SALT,numLineViolat_enhPF,numLineViolat_PF);
-fprintf(' %-24s %8d %8d %8d\n','ALL', ...
+fprintf(' %-24s %8s %8s %8s %8s\n','violations (total)', ...
+    'SALT','HB','Enh-PF','PF');
+fprintf(' %-24s %8d %8d %8d %8d\n','bus voltage', ...
+    numVlimViolat_SALT,numVlimViolat_HB,numVlimViolat_enhPF, ...
+    numVlimViolat_PF);
+fprintf(' %-24s %8d %8d %8d %8d\n','generator Q limit', ...
+    numQlimViolat_SALT,numQlimViolat_HB,numQlimViolat_enhPF, ...
+    numQlimViolat_PF);
+fprintf(' %-24s %8d %8d %8d %8d\n','branch rating', ...
+    numLineViolat_SALT,numLineViolat_HB,numLineViolat_enhPF, ...
+    numLineViolat_PF);
+fprintf(' %-24s %8d %8d %8d %8d\n','ALL', ...
     numVlimViolat_SALT+numQlimViolat_SALT+numLineViolat_SALT, ...
+    numVlimViolat_HB+numQlimViolat_HB+numLineViolat_HB, ...
     numVlimViolat_enhPF+numQlimViolat_enhPF+numLineViolat_enhPF, ...
     numVlimViolat_PF+numQlimViolat_PF+numLineViolat_PF);
 fprintf('----------------------------------------------------------------\n');
-fprintf(' %-24s %8s %8s %8d\n','contingencies unsolved','-','-', ...
-    numNoConvergence_PF);
-fprintf(' %-24s %8.4f %8.4f %8s\n','min frequency (Hz)', ...
-    min(freq_SALT),min(freq_enhPF),'60.0000');
+fprintf(' %-24s %8s %8s %8s %8d\n','contingencies unsolved', ...
+    '-','-','-',numNoConvergence_PF);
+fprintf(' %-24s %8.4f %8.4f %8.4f %8s\n','min frequency (Hz)', ...
+    min(freq_SALT),min(freq_HB),min(freq_enhPF),'60.0000');
+fprintf('================================================================\n');
+
+% HB is in the sweep as a check on itself, so say how well it held. The
+% counts above must match SALT's column for column; if they ever do not,
+% the per-contingency numbers here say where to look.
+fprintf(' HB vs SALT: worst relative difference %.3e (on %s, outage at bus %d)\n', ...
+    max(hbVsSalt_rel),hbVsSalt_what(find(hbVsSalt_rel== ...
+    max(hbVsSalt_rel),1)),outagedGenBus(find(hbVsSalt_rel== ...
+    max(hbVsSalt_rel),1)));
+assert(isequal( ...
+    [numVlimViolat_HB,numQlimViolat_HB,numLineViolat_HB], ...
+    [numVlimViolat_SALT,numQlimViolat_SALT,numLineViolat_SALT]), ...
+    ['HB and SALT agree on the solution but not on the violation counts, ' ...
+     'which means a quantity is being extracted at the wrong harmonic ' ...
+     'or the wrong scale.'])
+fprintf(' HB and SALT report identical violation counts.\n');
 fprintf('================================================================\n');

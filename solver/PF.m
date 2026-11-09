@@ -751,10 +751,13 @@ classdef PF < handle
 
                 v_prev = v;
 
-                % Solves Y*v = I. The original called KLU here
-                % (klu(Y,'\',I)); KLU is not installed, and MATLAB's sparse
-                % backslash performs the same solve.
-                v = Y \ I;
+                % Solves Y*v = I with KLU, as the original PowerFlow
+                % did. KLU is SuiteSparse's unsymmetric sparse solver,
+                % aimed at exactly this kind of circuit-simulation matrix,
+                % and it is what the paper's timings were taken with.
+                % MATLAB's sparse backslash (v = Y \ I) gives the same
+                % answer if SuiteSparse is not on the path.
+                v = klu(Y, '\', I);
 
                 % Convergence is judged on the raw Newton step, before any
                 % limiting, so a clamped step never reads as converged.

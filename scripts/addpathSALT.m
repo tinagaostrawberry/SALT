@@ -15,7 +15,8 @@ root = fileparts(fileparts(mfilename('fullpath')));
 
 srcDirs = ["solver","scripts","scripts_contingency","utils","validation", ...
            fullfile("solver","indices"),   fullfile("solver","ss_models"), ...
-           fullfile("solver","td_models"), fullfile("solver","init"), ...
+           fullfile("solver","td_models"), fullfile("solver","hb_models"), ...
+           fullfile("solver","init"), ...
            fullfile("solver","scripts")];
 for f = srcDirs
     d = fullfile(root,f);
@@ -26,6 +27,15 @@ end
 mp = 'C:\Users\tinagao\Desktop\Work\Software\matpower8.0';
 if isfolder(mp) && isempty(which('runpf'))
     addpath(genpath(mp));
+end
+
+% KLU (SuiteSparse) supplies the sparse solve PF.run_powerflow uses. Only
+% the MATLAB interface folder is added, not genpath: the rest of the
+% SuiteSparse tree carries its own build scripts and demos, and some of
+% those file names are common enough to shadow something.
+kluDir = 'C:\Users\tinagao\Desktop\Work\Software\SuiteSparse-dev\KLU\MATLAB';
+if isfolder(kluDir) && isempty(which('klu'))
+    addpath(kluDir);
 end
 
 assertNoShadowing(root,srcDirs);
